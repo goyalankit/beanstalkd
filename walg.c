@@ -36,7 +36,7 @@ walscandir(Wal *w)
 
     while ((e = readdir(d))) {
         if (strncmp(e->d_name, base, len) == 0) {
-            n = strtol(e->d_name+len, &p, 10);
+            n = strtol(e->d_name+len, &p, 10); // converts string to long. (advance pointer by len number of bits)
             if (p && *p == '\0') {
                 if (n > max) max = n;
                 if (n < min) min = n;
@@ -484,7 +484,7 @@ walinit(Wal *w, job list)
 {
     int min;
 
-    min = walscandir(w);
+    min = walscandir(w); // gets the min binlog number.
     walread(w, list, min);
 
     // first writable file

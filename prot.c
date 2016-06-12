@@ -415,6 +415,7 @@ next_eligible_job(int64 now)
     return j;
 }
 
+//RAFT CANDIDATE
 static void
 process_queue()
 {
@@ -451,6 +452,8 @@ delay_q_peek()
     return j;
 }
 
+// RAFT CANDIDATE
+// updates the queue and writes to log
 static int
 enqueue_job(Server *s, job j, int64 delay, char update_store)
 {
@@ -484,6 +487,7 @@ enqueue_job(Server *s, job j, int64 delay, char update_store)
     return 1;
 }
 
+// RAFT CANDIDATE
 static int
 bury_job(Server *s, job j, char update_store)
 {
@@ -528,6 +532,7 @@ enqueue_reserved_jobs(Conn *c)
     }
 }
 
+// RAFT CANDIDATE.
 static job
 delay_q_take()
 {
@@ -1865,8 +1870,12 @@ prottick(Server *s)
     int64 period = 0x34630B8A000LL; /* 1 hour in nanoseconds */
     int64 d;
 
+    /* Checking for delay queue. */
+    /* Moving them to main queue.*/
+    /* This could only be called at leader. */
+    /* We will need to take care of network traffic here. */
     now = nanoseconds();
-    while ((j = delay_q_peek())) {
+    while ((j = delay_q_peek())) { // no change.
         d = j->r.deadline_at - now;
         if (d > 0) {
             period = min(period, d);
@@ -1877,6 +1886,8 @@ prottick(Server *s)
         if (r < 1) bury_job(s, j, 0); /* out of memory, so bury it */
     }
 
+    /* apparently queues can be paused too */
+    /* we might want to skip this particular functionality */
     for (i = 0; i < tubes.used; i++) {
         t = tubes.items[i];
         d = t->deadline_at - now;
@@ -1889,6 +1900,7 @@ prottick(Server *s)
         }
     }
 
+    /*  */
     while (s->conns.len) {
         Conn *c = s->conns.data[0];
         d = c->tickat - now;

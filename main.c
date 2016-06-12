@@ -61,12 +61,25 @@ main(int argc, char **argv)
         printf("pid %d\n", getpid());
     }
 
+    printf("Serving requests now ..");
+    /*
+     * Creates the socket.
+     * bind -> listen
+     * max number of connections => 1024
+     *
+     * */
     r = make_server_socket(srv.addr, srv.port);
     if (r == -1) twarnx("make_server_socket()"), exit(111);
     srv.sock.fd = r;
 
+    /*
+     * Sets variables for beanstalkd protocol.
+     * */
     prot_init();
 
+    /*
+     *Runs as a specified user.
+     * */
     if (srv.user) su(srv.user);
     set_sig_handlers();
 

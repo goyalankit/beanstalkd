@@ -53,6 +53,7 @@ srvserve(Server *s)
         }
 
         if (rw) {
+            // main place where commands are processed.
             sock->f(sock->x, rw);
         }
     }

@@ -4,6 +4,25 @@
 #include "dat.h"
 
 
+/*
+
+function pointers
+
+typedef int(*Less)(void*, void*); // lest pointer to a function(pointer potiner ) reuturing int. function takes two pointers as arguments and returns int.
+typedef void(*Record)(void*, int); // pointer to a function that takes a pointer and int as an argument and returns nothing.
+
+struct Heap {
+    int     cap;
+    int     len;
+    void    **data;
+    Less    less;
+    Record  rec;
+};
+int   heapinsert(Heap *h, void *x);
+void* heapremove(Heap *h, int k);
+
+*/
+
 static void
 set(Heap *h, int k, void *x)
 {
