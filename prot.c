@@ -47,6 +47,7 @@ size_t job_data_size_limit = JOB_DATA_SIZE_LIMIT_DEFAULT;
 #define CMD_STATS_TUBE "stats-tube "
 #define CMD_QUIT "quit"
 #define CMD_PAUSE_TUBE "pause-tube"
+#define CMD_MOVE_DELAY_TO_READY "move-delay-to-ready"
 
 #define CONSTSTRLEN(m) (sizeof(m) - 1)
 
@@ -72,10 +73,12 @@ size_t job_data_size_limit = JOB_DATA_SIZE_LIMIT_DEFAULT;
 #define CMD_LIST_TUBES_WATCHED_LEN CONSTSTRLEN(CMD_LIST_TUBES_WATCHED)
 #define CMD_STATS_TUBE_LEN CONSTSTRLEN(CMD_STATS_TUBE)
 #define CMD_PAUSE_TUBE_LEN CONSTSTRLEN(CMD_PAUSE_TUBE)
+#define CMD_MOVE_DELAY_TO_READY_LEN CONSTSTRLEN(CMD_MOVE_DELAY_TO_READY)
 
 #define MSG_FOUND "FOUND"
 #define MSG_NOTFOUND "NOT_FOUND\r\n"
 #define MSG_RESERVED "RESERVED"
+#define MSG_MOVED "MOVED\r\n"
 #define MSG_DEADLINE_SOON "DEADLINE_SOON\r\n"
 #define MSG_TIMED_OUT "TIMED_OUT\r\n"
 #define MSG_DELETED "DELETED\r\n"
@@ -136,7 +139,8 @@ size_t job_data_size_limit = JOB_DATA_SIZE_LIMIT_DEFAULT;
 #define OP_QUIT 22
 #define OP_PAUSE_TUBE 23
 #define OP_JOBKICK 24
-#define TOTAL_OPS 25
+#define OP_MOVE_DELAY_TO_READY 25
+#define TOTAL_OPS 26
 
 #define STATS_FMT "---\n" \
     "current-jobs-urgent: %u\n" \
@@ -273,6 +277,7 @@ static const char * op_names[] = {
     CMD_QUIT,
     CMD_PAUSE_TUBE,
     CMD_JOBKICK,
+    CMD_MOVE_DELAY_TO_READY,
 };
 
 static job remove_buried_job(job j);
@@ -415,7 +420,6 @@ next_eligible_job(int64 now)
     return j;
 }
 
-//RAFT CANDIDATE
 static void
 process_queue()
 {
@@ -533,6 +537,7 @@ enqueue_reserved_jobs(Conn *c)
 }
 
 // RAFT CANDIDATE.
+/*
 static job
 delay_q_take()
 {
@@ -540,8 +545,23 @@ delay_q_take()
     if (!j) {
         return 0;
     }
+    // CALL RAFT HERE
+    // since we have a j object (which means we have an id), we can sync with different
+    // replicas before removing.
     heapremove(&j->tube->delay, j->heap_index);
     return j;
+}
+*/
+
+
+static void
+delay_q_take_and_enqueue(Server *s, job j)
+{
+  heapremove(&j->tube->delay, j->heap_index);
+  enqueue_job(s, j, 0, 0);
+  // For now we are not burrying it
+  // Do we need to do a raft round here?
+  //if (r < 1) bury_job(s, j, 0);*/ /* out of memory, so bury it */
 }
 
 static int
@@ -745,6 +765,7 @@ which_cmd(Conn *c)
 {
 #define TEST_CMD(s,c,o) if (strncmp((s), (c), CONSTSTRLEN(c)) == 0) return (o);
     TEST_CMD(c->cmd, CMD_PUT, OP_PUT);
+    TEST_CMD(c->cmd, CMD_MOVE_DELAY_TO_READY, OP_MOVE_DELAY_TO_READY);
     TEST_CMD(c->cmd, CMD_PEEKJOB, OP_PEEKJOB);
     TEST_CMD(c->cmd, CMD_PEEK_READY, OP_PEEK_READY);
     TEST_CMD(c->cmd, CMD_PEEK_DELAYED, OP_PEEK_DELAYED);
@@ -1199,11 +1220,13 @@ dispatch_cmd(Conn *c)
     uint64 id;
     tube t = NULL;
 
+    printf("Dispatching command\n");
     /* NUL-terminate this string so we can use strtol and friends */
     c->cmd[c->cmd_len - 2] = '\0';
 
     /* check for possible maliciousness */
     if (strlen(c->cmd) != c->cmd_len - 2) {
+        printf("dispatch_cmd: Bad format cmd %s", c->cmd);
         return reply_msg(c, MSG_BAD_FORMAT);
     }
 
@@ -1212,7 +1235,21 @@ dispatch_cmd(Conn *c)
         printf("<%d command %s\n", c->sock.fd, op_names[type]);
     }
 
+    printf("Almost about to Dispatching command\n");
     switch (type) {
+    case OP_MOVE_DELAY_TO_READY:
+      printf("Start OP_MOVE_DELAY_TO_READY\n");
+      errno = 0;
+      id = strtoull(c->cmd + CMD_MOVE_DELAY_TO_READY_LEN, &end_buf, 10);
+
+      printf("FOUND ID %"PRIu64" \r\n", id);
+      if (errno) return reply_msg(c, MSG_BAD_FORMAT);
+      op_ct[type]++;
+      j = job_find(id);
+      printf("FOUND THE JOB %s\n", j->body);
+      delay_q_take_and_enqueue(c->srv, j);
+      printf("Op move delay to ready command\n");
+      return reply_msg(c, MSG_MOVED);
     case OP_PUT:
         r = read_pri(&pri, c->cmd + 4, &delay_buf);
         if (r) return reply_msg(c, MSG_BAD_FORMAT);
@@ -1700,6 +1737,7 @@ conn_data(Conn *c)
         c->cmd_read += r; /* we got some bytes */
 
         c->cmd_len = cmd_len(c); /* find the EOL */
+        printf("CMD: %s, Length of command %d\n",c->cmd, cmd_len(c));
 
         /* yay, complete command line */
         if (c->cmd_len) return do_cmd(c);
@@ -1862,7 +1900,7 @@ prothandle(Conn *c, int ev)
 int64
 prottick(Server *s)
 {
-    int r;
+  //int r;
     job j;
     int64 now;
     int i;
@@ -1874,16 +1912,25 @@ prottick(Server *s)
     /* Moving them to main queue.*/
     /* This could only be called at leader. */
     /* We will need to take care of network traffic here. */
+    /*
+      delay queue is a heap as well with delay as priority key.
+     */
     now = nanoseconds();
     while ((j = delay_q_peek())) { // no change.
         d = j->r.deadline_at - now;
-        if (d > 0) {
+        if (d > 0) { // >0 means that we have deadline is still greater, so we exit
             period = min(period, d);
             break;
         }
+        // TODO MAKE RAFT CALL HERE
+
+        /*
+
+        MOVING THE FOLLOWING COMMANDS TO IT's OwN FUNCTION
         j = delay_q_take();
         r = enqueue_job(s, j, 0, 0);
-        if (r < 1) bury_job(s, j, 0); /* out of memory, so bury it */
+        if (r < 1) bury_job(s, j, 0);*/ /* out of memory, so bury it */
+
     }
 
     /* apparently queues can be paused too */
